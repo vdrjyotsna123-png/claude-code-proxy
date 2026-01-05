@@ -1,6 +1,16 @@
 # Node.js dependencies
 server/node_modules/
 server/package-lock.json
+node_modules/
+package-lock.json
+
+# Test files
+server/.test-tokens/
+server/.test-tokens-integration/
+coverage/
+
+# OAuth tokens
+.claude-code-proxy/
 
 # No token cache needed - reading directly from credentials
 
@@ -16,3 +26,5 @@ Thumbs.db
 
 # Logs
 *.log
+
+.claude
