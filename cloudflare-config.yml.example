@@ -1,0 +1,7 @@
+tunnel: YOUR-TUNNEL-ID-HERE
+credentials-file: /data/data/com.termux/files/home/.cloudflared/YOUR-TUNNEL-ID-HERE.json
+
+ingress:
+  - hostname: your-subdomain.yourdomain.com
+    service: http://localhost:42069
+  - service: http_status:404

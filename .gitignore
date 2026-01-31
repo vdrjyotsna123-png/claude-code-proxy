@@ -12,6 +12,10 @@ coverage/
 # OAuth tokens
 .claude-code-proxy/
 
+# Cloudflare credentials and config
+.cloudflared/
+cloudflare-config.yml
+
 # No token cache needed - reading directly from credentials
 
 # OS generated files

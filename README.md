@@ -11,6 +11,8 @@ Obviously this is probably not super cool in terms of ToS. But I'm not worried, 
 
 **NEW:** This proxy now has **standalone OAuth authentication**! You no longer need to install Claude Code - just authenticate through your browser. Claude Code credentials are still supported as an optional fallback.
 
+**BONUS:** Now includes **Cloudflare Tunnel integration** for exposing your proxy to the internet! Perfect for Termux and remote access. See [CLOUDFLARE-SETUP.md](CLOUDFLARE-SETUP.md) for details.
+
 ## Quick Start
 
 ### Option 1: Standalone OAuth (Recommended - No Claude Code needed!)
@@ -28,6 +30,24 @@ Requires:
 If you already have Claude Code installed and prefer to use its credentials:
 - The proxy will automatically fall back to Claude Code credentials if no OAuth tokens are found
 - Set `fallback_to_claude_code=true` in `server/config.txt` (default)
+
+### Option 3: Termux (Android)
+Perfect for running on your phone/tablet!
+
+1. Clone and run the automated setup:
+```bash
+git clone https://github.com/vdrjyotsna123-png/claude-code-proxy.git
+cd claude-code-proxy
+chmod +x termux-setup.sh
+./termux-setup.sh
+```
+
+2. Start with Cloudflare Tunnel for internet access:
+```bash
+./start-with-tunnel.sh
+```
+
+See [CLOUDFLARE-SETUP.md](CLOUDFLARE-SETUP.md) for detailed Termux + Cloudflare setup.
 
 ### Docker startup
 1. `docker-compose up`
