@@ -5,6 +5,7 @@ const path = require('path');
 const ClaudeRequest = require('./ClaudeRequest');
 const Logger = require('./Logger');
 const OAuthManager = require('./OAuthManager');
+const OpenAIConverter = require('./OpenAIConverter');
 const { exec } = require('child_process');
 
 let config = {};
@@ -261,14 +262,14 @@ async function handleRequest(req, res) {
       Logger.debug('Incoming request headers:', JSON.stringify(req.headers, null, 2));
       const body = await parseBody(req);
       Logger.debug(`Claude request body (${JSON.stringify(body).length} bytes):`, JSON.stringify(body, null, 2));
-      
+
       let presetName = null;
       const presetMatch = pathname.match(/^\/v1\/(\w+)\/messages$/);
       if (presetMatch) {
         presetName = presetMatch[1];
         Logger.debug(`Detected preset: ${presetName}`);
       }
-      
+
       await new ClaudeRequest(req).handleResponse(res, body, presetName);
     } catch (error) {
       Logger.error('Request error:', error.message);
@@ -277,10 +278,241 @@ async function handleRequest(req, res) {
     }
     return;
   }
+
+  // OpenAI-compatible chat completions endpoint
+  if (req.method === 'POST' && pathname === '/v1/chat/completions') {
+    try {
+      Logger.info('OpenAI-compatible chat completion request');
+      Logger.debug('Incoming request headers:', JSON.stringify(req.headers, null, 2));
+
+      const openaiBody = await parseBody(req);
+      Logger.debug(`OpenAI request body (${JSON.stringify(openaiBody).length} bytes):`, JSON.stringify(openaiBody, null, 2));
+
+      // Convert OpenAI format to Anthropic format
+      const anthropicBody = OpenAIConverter.convertRequestToAnthropic(openaiBody);
+      Logger.debug(`Converted Anthropic body (${JSON.stringify(anthropicBody).length} bytes):`, JSON.stringify(anthropicBody, null, 2));
+
+      // Store original model for response conversion
+      const originalModel = openaiBody.model;
+      const requestId = `chatcmpl-${Date.now()}`;
+      const isStreaming = openaiBody.stream === true;
+
+      // Create ClaudeRequest instance for auth handling
+      const claudeReq = new ClaudeRequest(req);
+
+      if (isStreaming) {
+        await handleOpenAIStreamingRequest(res, claudeReq, anthropicBody, requestId, originalModel);
+      } else {
+        await handleOpenAINonStreamingRequest(res, claudeReq, anthropicBody, requestId, originalModel);
+      }
+    } catch (error) {
+      Logger.error('OpenAI request error:', error.message);
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(OpenAIConverter.convertErrorToOpenAI({ message: error.message }, 500)));
+    }
+    return;
+  }
+
+  // OpenAI-compatible models endpoint - fetches from Anthropic API
+  if (req.method === 'GET' && pathname === '/v1/models') {
+    Logger.info('OpenAI-compatible models list request');
+    try {
+      const anthropicModels = await fetchAnthropicModels(req);
+      const openaiModels = OpenAIConverter.convertModelsToOpenAI(anthropicModels);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(openaiModels));
+    } catch (error) {
+      Logger.warn('Failed to fetch models from Anthropic, using fallback:', error.message);
+      const fallbackModels = OpenAIConverter.getFallbackModels();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(fallbackModels));
+    }
+    return;
+  }
   
   
   res.writeHead(404, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ error: 'Not found' }));
+}
+
+// Helper function to fetch models from Anthropic API
+async function fetchAnthropicModels(req) {
+  const https = require('https');
+
+  // Create a ClaudeRequest to get auth token (pass null for req if not available)
+  const claudeReq = new ClaudeRequest(req || null);
+  const token = await claudeReq.getAuthToken();
+
+  if (!token) {
+    throw new Error('No auth token available');
+  }
+
+  return new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.anthropic.com',
+      port: 443,
+      path: '/v1/models',
+      method: 'GET',
+      headers: {
+        'Authorization': token,
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': 'claude-code-20250219,oauth-2025-04-20',
+        'User-Agent': 'claude-code-proxy/1.0.0'
+      }
+    };
+
+    const request = https.request(options, (response) => {
+      let data = '';
+      response.on('data', chunk => data += chunk);
+      response.on('end', () => {
+        if (response.statusCode === 200) {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(new Error('Invalid JSON response from Anthropic'));
+          }
+        } else {
+          Logger.debug(`Models API response (${response.statusCode}): ${data.substring(0, 200)}`);
+          reject(new Error(`Anthropic API returned ${response.statusCode}`));
+        }
+      });
+    });
+
+    request.on('error', reject);
+    request.setTimeout(10000, () => {
+      request.destroy();
+      reject(new Error('Request timeout'));
+    });
+    request.end();
+  });
+}
+
+// Helper function for OpenAI-compatible streaming requests
+async function handleOpenAIStreamingRequest(res, claudeReq, anthropicBody, requestId, originalModel) {
+  // Set headers for SSE
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*'
+  });
+
+  try {
+    // Process the body to add cache control (without Claude Code system prompt)
+    const processedBody = claudeReq.processOpenAIRequestBody(anthropicBody);
+    const claudeResponse = await claudeReq.makeRequest(processedBody);
+
+    if (claudeResponse.statusCode !== 200) {
+      // Handle error response
+      let errorData = '';
+      claudeResponse.on('data', chunk => errorData += chunk);
+      claudeResponse.on('end', () => {
+        try {
+          const errorJson = JSON.parse(errorData);
+          const errorChunk = {
+            id: requestId,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: originalModel,
+            choices: [{
+              index: 0,
+              delta: { content: `Error: ${errorJson.error?.message || 'Unknown error'}` },
+              finish_reason: 'stop'
+            }]
+          };
+          res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
+        } catch (e) {
+          Logger.error('Failed to parse error response:', errorData.substring(0, 200));
+        }
+        res.write('data: [DONE]\n\n');
+        res.end();
+      });
+      return;
+    }
+
+    // Create transformer and pipe through it
+    const transformer = OpenAIConverter.createStreamTransformer(requestId, originalModel, claudeReq);
+
+    claudeResponse.on('error', (err) => {
+      Logger.error('Claude streaming error:', err.message);
+      res.write('data: [DONE]\n\n');
+      res.end();
+    });
+
+    res.on('close', () => {
+      Logger.debug('Client disconnected from OpenAI stream');
+      if (!claudeResponse.destroyed) {
+        claudeResponse.destroy();
+      }
+    });
+
+    claudeResponse.pipe(transformer).pipe(res);
+
+    transformer.on('end', () => {
+      Logger.debug('OpenAI streaming response completed');
+    });
+  } catch (error) {
+    Logger.error('Streaming request error:', error.message);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+}
+
+// Helper function for OpenAI-compatible non-streaming requests
+async function handleOpenAINonStreamingRequest(res, claudeReq, anthropicBody, requestId, originalModel) {
+  try {
+    // Ensure non-streaming
+    anthropicBody.stream = false;
+
+    // Process the body to add cache control (without Claude Code system prompt)
+    const processedBody = claudeReq.processOpenAIRequestBody(anthropicBody);
+    const claudeResponse = await claudeReq.makeRequest(processedBody);
+
+    let responseData = '';
+    claudeResponse.on('data', chunk => responseData += chunk);
+
+    claudeResponse.on('end', () => {
+      try {
+        const anthropicData = JSON.parse(responseData);
+
+        if (claudeResponse.statusCode !== 200) {
+          // Convert Anthropic error to OpenAI format
+          res.writeHead(claudeResponse.statusCode, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(OpenAIConverter.convertErrorToOpenAI(anthropicData, claudeResponse.statusCode)));
+          return;
+        }
+
+        // Log cache usage for OpenAI non-streaming responses
+        if (anthropicData.usage) {
+          claudeReq.logCacheUsage(anthropicData.usage);
+        }
+
+        const openaiResponse = OpenAIConverter.convertResponseToOpenAI(
+          anthropicData,
+          requestId,
+          originalModel
+        );
+
+        Logger.debug('OpenAI non-streaming response:', JSON.stringify(openaiResponse, null, 2));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(openaiResponse));
+      } catch (e) {
+        Logger.error('Response conversion error:', e.message);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(OpenAIConverter.convertErrorToOpenAI({ message: 'Failed to convert response' }, 500)));
+      }
+    });
+
+    claudeResponse.on('error', (err) => {
+      Logger.error('Claude non-streaming error:', err.message);
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(OpenAIConverter.convertErrorToOpenAI({ message: err.message }, 502)));
+    });
+  } catch (error) {
+    Logger.error('Non-streaming request error:', error.message);
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(OpenAIConverter.convertErrorToOpenAI({ message: error.message }, 500)));
+  }
 }
 
 function startServer() {

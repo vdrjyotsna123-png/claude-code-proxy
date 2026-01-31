@@ -355,6 +355,57 @@ class ClaudeRequest {
     body = this.stripTtlFromCacheControl(body);
     body = this.filterSamplingParams(body);
 
+    // Ensure cache_control is on the LAST system message for prompt caching
+    // This must happen AFTER all system array modifications (unshift, presets, etc.)
+    if (Array.isArray(body.system) && body.system.length > 0) {
+      const lastIndex = body.system.length - 1;
+      if (!body.system[lastIndex].cache_control) {
+        body.system[lastIndex].cache_control = { type: 'ephemeral' };
+      }
+    }
+
+    return body;
+  }
+
+  /**
+   * Process request body for OpenAI-compatible requests (without adding Claude Code system prompt)
+   * This applies cache control, filters sampling params, but skips the "You are Claude Code" prompt
+   */
+  processOpenAIRequestBody(body) {
+    if (!body) return body;
+
+    body = this.stripTtlFromCacheControl(body);
+    body = this.filterSamplingParams(body);
+
+    // Ensure cache_control is on the LAST system message for prompt caching
+    if (Array.isArray(body.system) && body.system.length > 0) {
+      const lastIndex = body.system.length - 1;
+      if (!body.system[lastIndex].cache_control) {
+        body.system[lastIndex].cache_control = { type: 'ephemeral' };
+        Logger.debug(`Applied cache_control to system message (${body.system.length} total system messages)`);
+      }
+    }
+
+    // Log cache breakpoint summary
+    const cacheBreakpoints = [];
+    if (body.system) {
+      body.system.forEach((msg, idx) => {
+        if (msg.cache_control) cacheBreakpoints.push(`system[${idx}]`);
+      });
+    }
+    if (body.messages) {
+      body.messages.forEach((msg, idx) => {
+        if (Array.isArray(msg.content)) {
+          msg.content.forEach((block, blockIdx) => {
+            if (block.cache_control) cacheBreakpoints.push(`msg[${idx}].content[${blockIdx}]`);
+          });
+        }
+      });
+    }
+    if (cacheBreakpoints.length > 0) {
+      Logger.info(`📌 Cache breakpoints: ${cacheBreakpoints.join(', ')} (${cacheBreakpoints.length} total)`);
+    }
+
     return body;
   }
 
@@ -482,13 +533,55 @@ class ClaudeRequest {
     }
   }
 
+  logCacheUsage(usage) {
+    if (!usage) return;
+
+    const cacheInfo = [];
+
+    if (usage.input_tokens !== undefined) {
+      cacheInfo.push(`Input: ${usage.input_tokens} tokens`);
+    }
+    if (usage.cache_creation_input_tokens !== undefined && usage.cache_creation_input_tokens > 0) {
+      cacheInfo.push(`Cache Creation: ${usage.cache_creation_input_tokens} tokens (written to cache)`);
+    }
+    if (usage.cache_read_input_tokens !== undefined && usage.cache_read_input_tokens > 0) {
+      cacheInfo.push(`Cache Hit: ${usage.cache_read_input_tokens} tokens (90% discount)`);
+    }
+    if (usage.output_tokens !== undefined) {
+      cacheInfo.push(`Output: ${usage.output_tokens} tokens`);
+    }
+
+    // Calculate cache efficiency
+    const totalInput = (usage.input_tokens || 0) + (usage.cache_creation_input_tokens || 0) + (usage.cache_read_input_tokens || 0);
+    const cacheHitRate = totalInput > 0 ? ((usage.cache_read_input_tokens || 0) / totalInput * 100).toFixed(1) : 0;
+
+    if (usage.cache_read_input_tokens > 0) {
+      Logger.info(`✓ CACHE HIT - ${cacheInfo.join(' | ')} | Cache Hit Rate: ${cacheHitRate}%`);
+    } else if (usage.cache_creation_input_tokens > 0) {
+      Logger.info(`⟳ CACHE WRITE - ${cacheInfo.join(' | ')} | Cache will be available for next request`);
+    } else {
+      Logger.info(`○ NO CACHE - ${cacheInfo.join(' | ')}`);
+    }
+  }
+
   streamResponse(res, claudeResponse) {
+    let accumulatedUsage = null;
+
     const extractClaudeText = (chunk) => {
       try {
         const lines = chunk.toString().split('\n');
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             const data = JSON.parse(line.substring(6));
+
+            // Extract usage information from streaming events
+            if (data.type === 'message_start' && data.message?.usage) {
+              accumulatedUsage = { ...data.message.usage };
+            }
+            if (data.type === 'message_delta' && data.usage) {
+              accumulatedUsage = { ...accumulatedUsage, ...data.usage };
+            }
+
             if (data.type === 'content_block_delta') {
               if (data.delta?.type === 'text_delta') {
                 return { text: data.delta.text };
@@ -527,7 +620,7 @@ class ClaudeRequest {
       
       if (Logger.getLogLevel() >= 3) {
         const debugStream = Logger.createDebugStream('Claude SSE', extractClaudeText);
-        
+
         debugStream.on('error', (err) => {
           Logger.debug('Debug stream error:', err);
           if (!res.headersSent) {
@@ -537,16 +630,22 @@ class ClaudeRequest {
             res.end(JSON.stringify({ error: 'Stream processing error' }));
           }
         });
-        
+
         claudeResponse.pipe(debugStream).pipe(res);
         debugStream.on('end', () => {
           Logger.debug('\n');
           Logger.debug('Streaming response sent back to client');
+          if (accumulatedUsage) {
+            this.logCacheUsage(accumulatedUsage);
+          }
         });
       } else {
         claudeResponse.pipe(res);
         claudeResponse.on('end', () => {
           Logger.debug('Streaming response sent back to client');
+          if (accumulatedUsage) {
+            this.logCacheUsage(accumulatedUsage);
+          }
         });
       }
     } else {
@@ -571,6 +670,12 @@ class ClaudeRequest {
         Logger.debug(`Non-streaming response (${claudeResponse.statusCode}): ${responseData.substring(0, 500)}`);
         try {
           const jsonData = JSON.parse(responseData);
+
+          // Log cache usage for non-streaming responses
+          if (jsonData.usage) {
+            this.logCacheUsage(jsonData.usage);
+          }
+
           res.setHeader('Content-Type', 'application/json');
           Logger.debug('Outgoing response headers to client:', JSON.stringify(res.getHeaders(), null, 2));
           res.end(JSON.stringify(jsonData));
