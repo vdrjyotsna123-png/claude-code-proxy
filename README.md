@@ -42,12 +42,19 @@ chmod +x termux-setup.sh
 ./termux-setup.sh
 ```
 
-2. Start with Cloudflare Tunnel for internet access:
+2. Start with public internet access (choose one):
+
+**Recommended - localhost.run (works perfectly, zero setup):**
+```bash
+./start-with-localhostrun.sh
+```
+
+**Alternative - Cloudflare Tunnel (has DNS issues in Termux):**
 ```bash
 ./start-with-tunnel.sh
 ```
 
-See [CLOUDFLARE-SETUP.md](CLOUDFLARE-SETUP.md) for detailed Termux + Cloudflare setup.
+See [CLOUDFLARE-SETUP.md](CLOUDFLARE-SETUP.md) for detailed setup guides and troubleshooting.
 
 ### Docker startup
 1. `docker-compose up`

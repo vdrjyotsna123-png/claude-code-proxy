@@ -1,21 +1,99 @@
-# Cloudflare Tunnel Setup Guide
+# Tunnel Setup Guide
 
-This guide will help you set up Cloudflare Tunnel to expose your Claude Code Proxy to the internet securely.
+This guide will help you expose your Claude Code Proxy to the internet using tunneling services.
 
-## Why Use Cloudflare Tunnel?
+## 🚀 Quick Start for Termux Users
+
+**Recommended:** Use localhost.run (works perfectly in Termux, no setup needed!)
+
+```bash
+./start-with-localhostrun.sh
+```
+
+That's it! You'll get a public URL immediately. Skip to the [localhost.run section](#localhostrun-recommended-for-termux) below.
+
+---
+
+## Tunneling Options
+
+### localhost.run (Recommended for Termux)
+
+- **Zero setup**: Works immediately, no account needed
+- **SSH-based**: Uses standard SSH (already in Termux)
+- **No DNS issues**: Avoids IPv6/DNS problems in Termux
+- **Free**: Completely free to use
+- **HTTPS**: Automatic SSL/TLS encryption
+
+### Cloudflare Tunnel
 
 - **Secure**: No need to open ports on your router
-- **Free**: Cloudflare Tunnel is free to use
-- **Easy**: Simple setup process
-- **HTTPS**: Automatic SSL/TLS encryption
-- **Perfect for Termux**: Works great on Android devices
+- **Custom domains**: Use your own domain
+- **Persistent URLs**: Same URL every time
+- **Note**: Has DNS/IPv6 issues in Termux (see troubleshooting)
 
-## Prerequisites
+---
+
+## localhost.run (Recommended for Termux)
+
+### What is localhost.run?
+
+localhost.run is a free SSH-based tunneling service that creates a public URL for your local server. Perfect for Termux because:
+- No installation needed (uses built-in SSH)
+- No account required
+- No configuration needed
+- Works around Termux DNS/IPv6 issues
+
+### Quick Start
+
+```bash
+# Just run this script!
+./start-with-localhostrun.sh
+```
+
+You'll see output like:
+```
+Connect to http://xxxxx.lhr.life or https://xxxxx.lhr.life
+```
+
+That's your public URL! Use `https://xxxxx.lhr.life/v1` as your API endpoint.
+
+### Manual Setup (if you prefer)
+
+```bash
+# Terminal 1: Start the proxy
+node server/server.js
+
+# Terminal 2: Start the tunnel
+ssh -R 80:localhost:42069 nokey@localhost.run
+```
+
+The URL will be displayed in Terminal 2.
+
+### Pros and Cons
+
+✅ **Pros:**
+- Works perfectly in Termux
+- No setup, no account, no config
+- Free and reliable
+- HTTPS included
+
+❌ **Cons:**
+- URL changes each restart
+- Connection timeout after period of inactivity (just reconnect)
+- Shared service (others use it too)
+
+---
+
+## Cloudflare Tunnel
+
+**Note:** Cloudflare Tunnel has DNS/IPv6 issues in Termux. We recommend using localhost.run instead. If you still want to try Cloudflare Tunnel, continue reading.
+
+### Prerequisites
 
 - A Cloudflare account (free): https://dash.cloudflare.com/sign-up
 - (Optional) A domain registered with Cloudflare
 
-## Installation
+### Installation
 
 ### On Termux (Android)
 
@@ -188,29 +266,53 @@ sudo systemctl status claude-proxy
 
 ## Troubleshooting
 
-### "cloudflared: command not found"
+### localhost.run Issues
+
+#### "Connection refused" or tunnel won't connect
+- Check if your network blocks outgoing SSH (port 22)
+- Try from a different network (WiFi vs mobile data)
+- Verify the proxy is running: `curl http://localhost:42069`
+
+#### Tunnel disconnects frequently
+- Normal behavior after inactivity
+- Just restart the script: `./start-with-localhostrun.sh`
+- Consider using Cloudflare Tunnel for persistent connections
+
+### Cloudflare Tunnel Issues
+
+#### DNS errors in Termux: "lookup api.trycloudflare.com: connection refused"
+**This is a known issue with cloudflared in Termux due to IPv6/DNS problems.**
+
+**Solution:** Use localhost.run instead:
+```bash
+./start-with-localhostrun.sh
+```
+
+If you really need Cloudflare, the only workaround is using a named tunnel with authentication (not quick tunnel), which still may have issues.
+
+#### "cloudflared: command not found"
 - Make sure you completed the installation steps
 - On Termux, verify with: `which cloudflared`
 - Try reinstalling following the steps above
 
-### Authentication not working in Termux
+#### Authentication not working in Termux
 - Copy the URL shown after `cloudflared tunnel login`
 - Paste it in your phone's browser
 - Complete the authentication there
+- This often fails due to the same DNS issues - use localhost.run instead
 
-### Tunnel won't start
+#### Tunnel won't start
 - Check if port 42069 is already in use: `lsof -i :42069` (or `netstat -an | grep 42069`)
 - Verify your config file exists: `cat ~/.cloudflared/config.yml`
 - Check logs: `cloudflared tunnel run` (run manually to see errors)
 
-### Connection refused errors
+#### Connection refused errors
 - Make sure the proxy is running first before starting the tunnel
 - Check proxy is accessible locally: `curl http://localhost:42069`
 
-### Quick tunnel URL not showing
-- Wait a few seconds after startup
-- Check for errors in the output
-- Try running manually: `cloudflared tunnel --url http://localhost:42069`
+#### Quick tunnel URL not showing
+- This usually means DNS issues (see above)
+- Use localhost.run instead for Termux
 
 ## Security Notes
 
