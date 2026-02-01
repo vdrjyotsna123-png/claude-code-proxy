@@ -14,6 +14,30 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# Detect if running on Termux
+IS_TERMUX=false
+if [ -d "/data/data/com.termux" ]; then
+    IS_TERMUX=true
+    echo -e "${YELLOW}ℹ Detected Termux environment${NC}"
+    echo ""
+fi
+
+# Fix DNS and IPv6 issues on Termux
+if [ "$IS_TERMUX" = true ]; then
+    # Set environment variables to fix DNS resolution
+    export GODEBUG=netdns=go
+    export ANDROID_DNS_MODE=local
+
+    # Ensure DNS is properly configured
+    if [ ! -f "$PREFIX/etc/resolv.conf" ] || [ ! -s "$PREFIX/etc/resolv.conf" ]; then
+        echo -e "${YELLOW}Configuring DNS...${NC}"
+        echo "nameserver 8.8.8.8" > $PREFIX/etc/resolv.conf
+        echo "nameserver 1.1.1.1" >> $PREFIX/etc/resolv.conf
+        echo -e "${GREEN}✓ DNS configured${NC}"
+        echo ""
+    fi
+fi
+
 # Check if cloudflared is installed
 if ! command -v cloudflared &> /dev/null; then
     echo -e "${RED}Error: cloudflared is not installed!${NC}"
@@ -88,7 +112,12 @@ echo -e "${GREEN}Starting Cloudflare Tunnel...${NC}"
 
 if [ "$USE_QUICK_TUNNEL" = true ]; then
     echo -e "${YELLOW}Using quick tunnel (temporary URL)${NC}"
-    cloudflared tunnel --url http://localhost:42069 &
+    # Use 127.0.0.1 instead of localhost to force IPv4 (fixes Termux IPv6 issues)
+    if [ "$IS_TERMUX" = true ]; then
+        cloudflared tunnel --url http://127.0.0.1:42069 --protocol http2 &
+    else
+        cloudflared tunnel --url http://localhost:42069 &
+    fi
     TUNNEL_PID=$!
 else
     echo -e "${GREEN}Using configured tunnel${NC}"
